@@ -4,3 +4,4 @@ streamlit
 matplotlib
 requests
 beautifulsoup4
+altair==4.2.2
