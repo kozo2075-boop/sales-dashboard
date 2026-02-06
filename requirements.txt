@@ -1,6 +1,6 @@
+streamlit>=1.33.0
 pandas
 numpy
-streamlit
 matplotlib
 requests
 beautifulsoup4
