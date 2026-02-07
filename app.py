@@ -168,6 +168,17 @@ COLORS = {
     # 折れ線（ALL）
     "ALL_LINE": "#4EF282",  # ネオングリーン
 
+    # 円グラフ（ALL / プラン別固定色）
+    # ルール：プラン名ごとに固定色（売上降順で並べても色が崩れない）
+    "ALL_PLAN_COLORS": {
+        "顔出し最強プラン": "#3B82F6",      # blue
+        "こた倶楽部": "#F59E0B",            # amber
+        "バックナンバー": "#10B981",        # green
+        "バックナンバー(単月)": "#6EE7B7",   # light green (派生)
+        "その他": "#94A3B8",                # gray fallback
+    },
+
+
     # =========================
     # MyFans
     # =========================
@@ -605,21 +616,33 @@ def load_myfans_all(title_len: int) -> pd.DataFrame:
         if any(c not in df_raw.columns for c in required):
             continue
 
-        def classify_item_type(kind: str, url: str = "") -> str:
+        def classify_item_type(kind: str, url: str = "", target: str = "") -> str:
             kind_s = "" if pd.isna(kind) else str(kind)
             url_s = "" if pd.isna(url) else str(url)
+            tgt_s = "" if pd.isna(target) else str(target)
             u = url_s.lower()
+
+            # --- MyFans 固有：バックナンバー(単月)はプラン扱いにする ---
+            # CSV上でURLが空・種類が曖昧でも「対象」に単月バックナンバーが入ることがあるため
+            t = tgt_s.replace(" ", "").replace("　", "")
+            k = kind_s.replace(" ", "").replace("　", "")
+            if ("バックナンバー" in t and "単月" in t) or ("バックナンバー" in k and ("単月" in k or "1ヶ月" in k or "１ヶ月" in k)):
+                return "plan"
+
             # URL優先: /account/plans/ や /plans/ はプラン購入扱い
             if "/account/plans/" in u or "/plans/" in u:
                 return "plan"
+
             # 投稿URLは post 扱い
             if "/posts/" in u or "/post/" in u:
                 return "post"
+
             # 種類テキストで判定
             if "プラン" in kind_s or "定期" in kind_s or "サブスク" in kind_s or "月額" in kind_s:
                 return "plan"
             if "単品" in kind_s or "投稿" in kind_s:
                 return "post"
+
             # 不明な場合は post として扱う（表示が欠けないように）
             return "post"
 
@@ -628,10 +651,11 @@ def load_myfans_all(title_len: int) -> pd.DataFrame:
             amount = pd.to_numeric(r["金額"], errors="coerce")
             fee = pd.to_numeric(r["手数料"], errors="coerce")
             url = str(r["対象URL"]) if not pd.isna(r["対象URL"]) else ""
-            item_type = classify_item_type(r["種類"], url)
+            target = str(r["対象"]) if not pd.isna(r["対象"]) else ""
+            item_type = classify_item_type(r["種類"], url, target)
 
             if item_type == "plan":
-                raw_title = str(r["対象"]) if not pd.isna(r["対象"]) else ""
+                raw_title = target
                 title_short = summarize_title(raw_title, int(title_len))
             else:
                 cached = get_cached_title(url) if url else None
@@ -1570,7 +1594,7 @@ def _multi_stop_grad_colors(stops_hex: list, n: int):
 
 def plan_pie_img(df: pd.DataFrame, title: str, height_px: int):
     """固定画像の円グラフ（hover無し）
-    - ALL のとき：MyFans+CandFans を統合して 3カテゴリ（顔出し最強プラン/バックナンバー/こた倶楽部）で表示
+    - ALL のとき：MyFans+CandFans を統合して 4カテゴリ（顔出し最強プラン/こた倶楽部/バックナンバー/バックナンバー(単月)）で表示
     - MyFans/CandFans のとき：そのままプラン別に表示
     仕様：多い順に並べて、時計回り（counterclock=False）
     """
@@ -1617,10 +1641,8 @@ def plan_pie_img(df: pd.DataFrame, title: str, height_px: int):
 
 
     if is_all:
-        # 統合して3カテゴリ（＋その他があれば最後に）
+        # 統合して4カテゴリ（＋その他があれば最後に）
         d["canon"] = d["title_short"].apply(_canon_plan_name)
-        # ALLでは「バックナンバー(単月)」もバックナンバーに統合して3カテゴリに寄せる
-        d["canon"] = d["canon"].replace({"バックナンバー(単月)": "バックナンバー"})
         g = (
             d.groupby("canon", as_index=False)["amount"]
             .sum()
@@ -1630,14 +1652,10 @@ def plan_pie_img(df: pd.DataFrame, title: str, height_px: int):
         labels = g["canon"].astype(str).tolist()
         values = g["amount"].astype(float).tolist()
 
-        # ALLの円グラフ色（配色C）。COLORSにALL_PIEがあればそれを優先
-        default_all_pie = ["#FF3B3B", "#4EF282", "#2E7BFF"]  # ネオン三原色（赤/緑/青）
-        if "ALL_PIE" in COLORS and isinstance(COLORS["ALL_PIE"], (list, tuple)) and len(COLORS["ALL_PIE"]) >= 3:
-            base_cols = list(COLORS["ALL_PIE"])
-        else:
-            base_cols = default_all_pie
+        # ALLの円グラフ色：プラン名ごとの固定色（売上降順で並べても色が崩れない）
+        all_map = COLORS.get("ALL_PLAN_COLORS", {})
+        colors = [all_map.get(str(lbl), all_map.get("その他", "#94A3B8")) for lbl in labels]
 
-        colors = _multi_stop_grad_colors(base_cols[:3], len(values))
 
     else:
         # MyFans / CandFans：プラン名を正式名称へ正規化して集計（色固定のため）
@@ -1669,9 +1687,12 @@ def plan_pie_img(df: pd.DataFrame, title: str, height_px: int):
         st.info("plan金額がありません")
         return
 
-    # サイズ：棒グラフと同程度にしたい → height_px を反映
-    fig_w = 11
-    fig_h = max(3.2, height_px / 90.0)
+    # サイズ：以前の見た目（注釈2.5倍・直径1.5倍）に戻す
+    base_fig_w = 11
+    base_fig_h = max(3.2, height_px / 90.0)
+    pie_scale = 1.5
+    fig_w = base_fig_w * pie_scale
+    fig_h = base_fig_h * pie_scale
     fig = plt.figure(figsize=(fig_w, fig_h), facecolor=(0, 0, 0, 0), dpi=220)
     ax = fig.add_subplot(111)
     ax.set_facecolor((1, 1, 1, 0.03))
@@ -1681,10 +1702,13 @@ def plan_pie_img(df: pd.DataFrame, title: str, height_px: int):
         colors=colors,
         startangle=90,
         counterclock=False,  # ★ 時計回り
+        radius=1.15,
         wedgeprops={"edgecolor": COLORS.get("PIE_EDGE", "#696969"), "linewidth": 1.0},
     )
 
-    ax.set_title(title, color="#EAF0FF", fontsize=14, pad=12, fontweight="bold")
+    annot_fs = 9.6 * 2.5
+    title_fs = annot_fs * 2.0
+    ax.set_title(title, color="#EAF0FF", fontsize=title_fs, pad=14, fontweight="bold")
 
     # 吹き出し（プラン名の下に金額・割合）
     used_tys = {"L": [], "R": []}
@@ -1723,7 +1747,7 @@ def plan_pie_img(df: pd.DataFrame, title: str, height_px: int):
             textcoords="data",
             ha="left" if x >= 0 else "right",
             va="center",
-            fontsize=9.6,
+            fontsize=annot_fs,
             color="#EAF0FF",
             bbox=dict(boxstyle="round,pad=0.35", fc=(0, 0, 0, 0.35), ec=(1, 1, 1, 0.18), lw=0.8),
             arrowprops=dict(
