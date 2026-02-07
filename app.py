@@ -970,163 +970,6 @@ df_all["amount"] = pd.to_numeric(df_all["amount"], errors="coerce").fillna(0)
 df_all["fee"] = pd.to_numeric(df_all["fee"], errors="coerce").fillna(0)
 df_all["year_month"] = df_all["year_month"].astype(str)
 
-def admin_debug_panel(df_my_all=None, df_ca_all=None, df_all=None):
-    """
-    管理者向けデバッグ表示（Cloud差分の切り分け用）
-    目的:
-      - fonts/ の存在確認と Matplotlib フォント読み込み可否の確認
-      - title_cache / uploads の存在確認
-      - postランキングが空になる理由（title_short の有効件数）を可視化
-    """
-    try:
-        if not is_admin:
-            return
-    except Exception:
-        return
-
-    import os
-    import sys
-    import platform as _platform
-    from pathlib import Path as _Path
-
-    with st.sidebar.expander("🛠 Debug（管理者専用・一時表示）", expanded=True):
-        st.caption("Cloud差分の切り分け用。不要になったら admin_debug_panel 一塊を削除してください。")
-
-        # -----------------------------
-        # Runtime / Path
-        # -----------------------------
-        st.markdown("### Runtime / Path")
-        try:
-            st.write("python:", sys.version.split()[0])
-            st.write("platform:", _platform.platform())
-        except Exception as e:
-            st.write("platform info error:", str(e))
-
-        try:
-            st.write("cwd:", os.getcwd())
-        except Exception as e:
-            st.write("cwd error:", str(e))
-
-        try:
-            base_dir = _Path(__file__).resolve().parent
-            st.write("__file__ dir:", str(base_dir))
-        except Exception as e:
-            base_dir = None
-            st.write("__file__ dir error:", str(e))
-
-        # -----------------------------
-        # Fonts
-        # -----------------------------
-        st.markdown("### Fonts")
-        try:
-            if base_dir is not None:
-                fonts_dir = base_dir / "fonts"
-            else:
-                fonts_dir = _Path("fonts")
-            st.write("fonts_dir:", str(fonts_dir), "exists=", fonts_dir.exists())
-
-            if fonts_dir.exists():
-                try:
-                    st.write("fonts_dir list:", sorted([p.name for p in fonts_dir.iterdir() if p.is_file()]))
-                except Exception as e:
-                    st.write("fonts_dir list error:", str(e))
-
-            # 期待ファイル候補（どれかあればOK）
-            candidates = [
-                fonts_dir / "app_font.ttf",
-                fonts_dir / "app_font.otf",
-                fonts_dir / "NotoSansJP-Regular.ttf",
-                fonts_dir / "NotoSansJP-VariableFont_wght.ttf",
-            ]
-            existing = [p for p in candidates if p.exists()]
-            st.write("font candidates found:", [p.name for p in existing])
-
-            # Matplotlibでフォント名が取れるか（rcParamsは変更しない）
-            try:
-                from matplotlib import font_manager as _font_manager
-                import matplotlib as _mpl
-
-                font_name = None
-                font_path_used = None
-                if existing:
-                    font_path_used = existing[0]
-                    try:
-                        # addfont は副作用（登録）あり。ただし rcParams は変更しない。
-                        _font_manager.fontManager.addfont(str(font_path_used))
-                        font_name = _font_manager.FontProperties(fname=str(font_path_used)).get_name()
-                    except Exception as e:
-                        st.write("addfont/get_name error:", str(e))
-
-                st.write("font_path_used:", str(font_path_used) if font_path_used else "(none)")
-                st.write("font_name:", font_name if font_name else "(none)")
-                st.write("rcParams['font.family']:", _mpl.rcParams.get("font.family"))
-                st.write("rcParams['font.sans-serif']:", _mpl.rcParams.get("font.sans-serif"))
-            except Exception as e:
-                st.write("matplotlib font debug error:", str(e))
-
-        except Exception as e:
-            st.write("fonts debug error:", str(e))
-
-        # -----------------------------
-        # Storage / cache
-        # -----------------------------
-        st.markdown("### Storage / Cache")
-        try:
-            # uploads dir (script内の Path("uploads") と一致するか確認)
-            uploads_dir = (base_dir / "uploads") if base_dir is not None else _Path("uploads")
-            st.write("uploads_dir:", str(uploads_dir), "exists=", uploads_dir.exists())
-            if uploads_dir.exists():
-                # 深すぎると重いので浅くだけ
-                try:
-                    st.write("uploads top entries:", sorted([p.name for p in uploads_dir.iterdir()])[:30])
-                except Exception as e:
-                    st.write("uploads list error:", str(e))
-        except Exception as e:
-            st.write("uploads debug error:", str(e))
-
-        try:
-            cache_path = (base_dir / "title_cache.sqlite3") if base_dir is not None else _Path("title_cache.sqlite3")
-            st.write("title_cache.sqlite3 exists:", cache_path.exists(), "path:", str(cache_path))
-        except Exception as e:
-            st.write("title_cache debug error:", str(e))
-
-        # -----------------------------
-        # Data sanity (post ranking)
-        # -----------------------------
-        st.markdown("### Data sanity（投稿ランキングの空原因チェック）")
-
-        def _post_title_stats(dfp, label):
-            if dfp is None or not isinstance(dfp, pd.DataFrame) or dfp.empty:
-                st.write(f"{label}: df is empty/None")
-                return
-            if "item_type" not in dfp.columns:
-                st.write(f"{label}: no item_type column")
-                return
-            dpost = dfp[dfp["item_type"] == "post"].copy()
-            st.write(f"{label}: post rows =", int(len(dpost)))
-            if "title_short" not in dpost.columns:
-                st.write(f"{label}: no title_short column")
-                return
-            s = dpost["title_short"].fillna("").astype(str)
-            non_empty = int((s.str.len() > 0).sum())
-            non_url = int((~s.str.startswith("http")).sum())
-            valid = int(((s.str.len() > 0) & (~s.str.startswith("http"))).sum())
-            st.write(f"{label}: title_short non-empty =", non_empty)
-            st.write(f"{label}: title_short non-url =", non_url)
-            st.write(f"{label}: title_short valid (non-empty & non-url) =", valid)
-
-        _post_title_stats(df_my_all, "MyFans(all)")
-        _post_title_stats(df_ca_all, "CandFans(all)")
-        _post_title_stats(df_all, "ALL(all)")
-
-
-
-
-
-# --- Admin Debug (TEMP) ---
-admin_debug_panel(df_my_all=df_my_all, df_ca_all=df_ca_all, df_all=df_all)
-# --- /Admin Debug (TEMP) ---
-
 # =============================
 # 年 / 月（年間）フィルタ（サイドバーではなくメイン上部に表示）
 # ＋ 管理者のみ：MyFans タイトル一括取得（全期間）
@@ -1388,12 +1231,6 @@ def show_df(df: pd.DataFrame, max_rows=200):
 
 # =============================
 # Matplotlib: 固定（画像化して表示）
-# =============================
-
-# =============================
-# Admin Debug Panel (TEMP)
-# - 管理者(is_admin)だけに常時表示
-# - 既存ロジックから独立（ここ一塊を削除すれば完全に消える）
 # =============================
 def mpl_setup():
     matplotlib.rcParams["font.family"] = ["Meiryo", "Yu Gothic", "Noto Sans JP", "sans-serif"]
@@ -1897,21 +1734,48 @@ def top_bars_img(
 ) -> pd.DataFrame:
     """
     画像として棒グラフを描画（hover/ズーム/パンが一切出ない）
-    返り値は集計済みDataFrame（title_shortごとのamount合計）
+    返り値は集計済みDataFrame（投稿キーごとのamount合計）
     """
     d = df[df["item_type"] == item_type].copy()
+    # title_short が空/URL のままだと Cloud では棒グラフが空になりやすいので、
+    # 「表示ラベル」と「集計キー」を分離する。
+    #
+    # - 集計キー: title_short が有効ならそれ、無効なら url（なければ title_raw）
+    # - 表示ラベル: title_short が無効なものは「（タイトル未取得）#n」で表示（URLは表示しない）
+    if "title_short" in d.columns:
+        ts = d["title_short"].astype(str).fillna("")
+    else:
+        ts = pd.Series([""] * len(d))
+    ts_valid = (ts.str.len() > 0) & (~ts.str.startswith("http"))
 
-    # URLのまま / title_short空 はランキングに出さない
-    d = d[d["title_short"].astype(str).str.len() > 0]
-    d = d[~d["title_short"].astype(str).str.startswith("http")]
+    if "title_raw" in d.columns:
+        tr = d["title_raw"].astype(str).fillna("")
+        tr_valid = (tr.str.len() > 0) & (~tr.str.startswith("http"))
+    else:
+        tr = pd.Series([""] * len(d))
+        tr_valid = pd.Series([False] * len(d))
+
+    if "url" in d.columns:
+        url = d["url"].astype(str).fillna("")
+        url_valid = url.str.len() > 0
+    else:
+        url = pd.Series([""] * len(d))
+        url_valid = pd.Series([False] * len(d))
+
+    # 集計キーを作る（優先順位: title_short -> title_raw -> url）
+    d["__post_key"] = ""
+    d.loc[ts_valid, "__post_key"] = ts[ts_valid]
+    d.loc[~ts_valid & tr_valid, "__post_key"] = tr[~ts_valid & tr_valid]
+    d.loc[~ts_valid & ~tr_valid & url_valid, "__post_key"] = url[~ts_valid & ~tr_valid & url_valid]
+
+    d = d[d["__post_key"].astype(str).str.len() > 0]
 
     if len(d) == 0:
         st.info("データがありません")
         return pd.DataFrame()
-
-    g_cols = ["title_short"]
+    g_cols = ["__post_key"]
     if "platform" in d.columns:
-        g_cols = ["platform", "title_short"]
+        g_cols = ["platform", "__post_key"]
 
     g = (
         d.groupby(g_cols, as_index=False)["amount"]
@@ -1934,8 +1798,19 @@ def top_bars_img(
     ax.set_facecolor((1, 1, 1, 0.03))
 
     vals = g["amount"].astype(float).values
-    labels = g["title_short"].astype(str).tolist()
+    labels = None  # will be set below
     y = np.arange(n)
+
+    # 表示ラベルを作る（URLは表示せず、タイトル未取得として番号付け）
+    key_list = g["__post_key"].astype(str).tolist()
+    labels = []
+    missing_idx = 1
+    for k in key_list:
+        if str(k).startswith("http"):
+            labels.append(f"（タイトル未取得）#{missing_idx}")
+            missing_idx += 1
+        else:
+            labels.append(str(k))
 
     # 色決定（ALLのとき platform ごとに色を変える）
     if color_spec is None and color_hex is not None:
@@ -2161,9 +2036,12 @@ def full_title_panel(g: pd.DataFrame, title: str):
 
 def render_post_ranking(g_post: pd.DataFrame, title_prefix: str):
     """
-    g_post: top_bars_img に渡している元データの集計結果（想定）
+    g_post: top_bars_img の集計結果（想定）
            必須列：title, amount
            ALLの場合は platform 列があれば色■を出す
+    仕様:
+      - 1〜5位は常時表示
+      - 6位以下はドロップダウン（選択式）で表示
     """
     if g_post is None or len(g_post) == 0:
         st.info("投稿データがありません")
@@ -2175,46 +2053,84 @@ def render_post_ranking(g_post: pd.DataFrame, title_prefix: str):
     if "title" not in df.columns:
         if "name" in df.columns:
             df = df.rename(columns={"name": "title"})
+        elif "title_short" in df.columns:
+            df = df.rename(columns={"title_short": "title"})
+        else:
+            df["title"] = ""
+
     if "amount" not in df.columns:
         if "sales" in df.columns:
             df = df.rename(columns={"sales": "amount"})
+        else:
+            df["amount"] = 0.0
 
-    if "title" not in df.columns or "amount" not in df.columns:
-        # どうしても形式が違う場合は既存にフォールバック
-        full_title_panel(g_post, f"{title_prefix} 投稿TOP")
-        return
+    df["title"] = df["title"].astype(str)
+    df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0.0)
 
-    df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
-    df = df.sort_values("amount", ascending=False)
+    # 金額降順
+    df = df.sort_values("amount", ascending=False).reset_index(drop=True)
 
-    # 表示用（URLっぽいのは除外したい方針ならここで落とせる）
-    # df = df[~df["title"].astype(str).str.startswith("http")]
+    # 1〜5位を常時表示
+    fixed_n = 5
+    fixed = df.head(fixed_n).copy()
+
+    st.markdown("#### 投稿ランキング（売上順）")
+    st.caption("1〜5位は常時表示。6位以下はドロップダウンで選択して表示します。")
 
     my_col = COLORS.get("MY_LINE", "#FF0000")
     ca_col = COLORS.get("CA_LINE", "#380061")
 
-    # タイトル一覧
-    st.markdown("### 🏆 投稿ランキング（売上）")
-    for i, row in enumerate(df.itertuples(index=False), start=1):
-        t = str(getattr(row, "title", ""))
-        a = float(getattr(row, "amount", 0.0))
+    # 表示ヘルパー（既存の見た目を維持）
+    def _render_one(rank: int, row: pd.Series):
+        t = str(row.get("title", "")).strip()
+        a = float(row.get("amount", 0.0))
+        if not t:
+            return
 
-        # ALLなら platform 列があれば色■を付ける
         prefix = ""
         if title_prefix == "ALL" and "platform" in df.columns:
-            plat = getattr(row, "platform", "")
+            plat = str(row.get("platform", "")).strip()
             if plat == "myfans":
                 prefix = f'<span style="color:{my_col};font-weight:800;">■</span> '
             elif plat == "candfans":
                 prefix = f'<span style="color:{ca_col};font-weight:800;">■</span> '
 
-        # 1行で見やすく（長いタイトルは折り返す）
         st.markdown(
-            f'{i}位：{prefix}<span style="font-weight:700;">{t}</span> '
+            f'{rank}位：{prefix}<span style="font-weight:700;">{t}</span> '
             f'<span style="color:#CFCFD6;">（{a:,.0f}円）</span>',
             unsafe_allow_html=True,
         )
 
+    for i, row in enumerate(fixed.itertuples(index=False), start=1):
+        _render_one(i, pd.Series(row._asdict()))
+
+    # 6位以下：ドロップダウンで選択表示
+    rest = df.iloc[fixed_n:].copy()
+    if len(rest) == 0:
+        return
+
+    with st.expander("6位以下（ドロップダウンで表示）", expanded=False):
+        # option label は短く（UIが崩れないように）
+        options = []
+        for j, r in rest.iterrows():
+            rank = j + 1
+            t = str(r.get("title", "")).strip()
+            a = float(r.get("amount", 0.0))
+            label = f"{rank}位：{clip_text(t, 26)}（{a:,.0f}円）"
+            options.append(label)
+
+        sel = st.selectbox("表示する順位を選択", ["（選択してください）"] + options, index=0, key=f"post_rank_dd_{title_prefix}")
+
+        if sel != "（選択してください）":
+            # 選択ラベルから先頭の順位を取り出す
+            m = re.match(r"^(\d+)位：", sel)
+            if m:
+                rank = int(m.group(1))
+                # df は 0-index なので rank-1
+                if 1 <= rank <= len(df):
+                    row = df.iloc[rank - 1]
+                    st.markdown("---")
+                    _render_one(rank, row)
 
 # =============================
 # Layout helpers
