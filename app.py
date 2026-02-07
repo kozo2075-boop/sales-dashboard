@@ -19,7 +19,6 @@ import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.ticker import FuncFormatter
-from matplotlib import font_manager
 
 # =============================
 # Streamlit config
@@ -971,6 +970,163 @@ df_all["amount"] = pd.to_numeric(df_all["amount"], errors="coerce").fillna(0)
 df_all["fee"] = pd.to_numeric(df_all["fee"], errors="coerce").fillna(0)
 df_all["year_month"] = df_all["year_month"].astype(str)
 
+def admin_debug_panel(df_my_all=None, df_ca_all=None, df_all=None):
+    """
+    管理者向けデバッグ表示（Cloud差分の切り分け用）
+    目的:
+      - fonts/ の存在確認と Matplotlib フォント読み込み可否の確認
+      - title_cache / uploads の存在確認
+      - postランキングが空になる理由（title_short の有効件数）を可視化
+    """
+    try:
+        if not is_admin:
+            return
+    except Exception:
+        return
+
+    import os
+    import sys
+    import platform as _platform
+    from pathlib import Path as _Path
+
+    with st.sidebar.expander("🛠 Debug（管理者専用・一時表示）", expanded=True):
+        st.caption("Cloud差分の切り分け用。不要になったら admin_debug_panel 一塊を削除してください。")
+
+        # -----------------------------
+        # Runtime / Path
+        # -----------------------------
+        st.markdown("### Runtime / Path")
+        try:
+            st.write("python:", sys.version.split()[0])
+            st.write("platform:", _platform.platform())
+        except Exception as e:
+            st.write("platform info error:", str(e))
+
+        try:
+            st.write("cwd:", os.getcwd())
+        except Exception as e:
+            st.write("cwd error:", str(e))
+
+        try:
+            base_dir = _Path(__file__).resolve().parent
+            st.write("__file__ dir:", str(base_dir))
+        except Exception as e:
+            base_dir = None
+            st.write("__file__ dir error:", str(e))
+
+        # -----------------------------
+        # Fonts
+        # -----------------------------
+        st.markdown("### Fonts")
+        try:
+            if base_dir is not None:
+                fonts_dir = base_dir / "fonts"
+            else:
+                fonts_dir = _Path("fonts")
+            st.write("fonts_dir:", str(fonts_dir), "exists=", fonts_dir.exists())
+
+            if fonts_dir.exists():
+                try:
+                    st.write("fonts_dir list:", sorted([p.name for p in fonts_dir.iterdir() if p.is_file()]))
+                except Exception as e:
+                    st.write("fonts_dir list error:", str(e))
+
+            # 期待ファイル候補（どれかあればOK）
+            candidates = [
+                fonts_dir / "app_font.ttf",
+                fonts_dir / "app_font.otf",
+                fonts_dir / "NotoSansJP-Regular.ttf",
+                fonts_dir / "NotoSansJP-VariableFont_wght.ttf",
+            ]
+            existing = [p for p in candidates if p.exists()]
+            st.write("font candidates found:", [p.name for p in existing])
+
+            # Matplotlibでフォント名が取れるか（rcParamsは変更しない）
+            try:
+                from matplotlib import font_manager as _font_manager
+                import matplotlib as _mpl
+
+                font_name = None
+                font_path_used = None
+                if existing:
+                    font_path_used = existing[0]
+                    try:
+                        # addfont は副作用（登録）あり。ただし rcParams は変更しない。
+                        _font_manager.fontManager.addfont(str(font_path_used))
+                        font_name = _font_manager.FontProperties(fname=str(font_path_used)).get_name()
+                    except Exception as e:
+                        st.write("addfont/get_name error:", str(e))
+
+                st.write("font_path_used:", str(font_path_used) if font_path_used else "(none)")
+                st.write("font_name:", font_name if font_name else "(none)")
+                st.write("rcParams['font.family']:", _mpl.rcParams.get("font.family"))
+                st.write("rcParams['font.sans-serif']:", _mpl.rcParams.get("font.sans-serif"))
+            except Exception as e:
+                st.write("matplotlib font debug error:", str(e))
+
+        except Exception as e:
+            st.write("fonts debug error:", str(e))
+
+        # -----------------------------
+        # Storage / cache
+        # -----------------------------
+        st.markdown("### Storage / Cache")
+        try:
+            # uploads dir (script内の Path("uploads") と一致するか確認)
+            uploads_dir = (base_dir / "uploads") if base_dir is not None else _Path("uploads")
+            st.write("uploads_dir:", str(uploads_dir), "exists=", uploads_dir.exists())
+            if uploads_dir.exists():
+                # 深すぎると重いので浅くだけ
+                try:
+                    st.write("uploads top entries:", sorted([p.name for p in uploads_dir.iterdir()])[:30])
+                except Exception as e:
+                    st.write("uploads list error:", str(e))
+        except Exception as e:
+            st.write("uploads debug error:", str(e))
+
+        try:
+            cache_path = (base_dir / "title_cache.sqlite3") if base_dir is not None else _Path("title_cache.sqlite3")
+            st.write("title_cache.sqlite3 exists:", cache_path.exists(), "path:", str(cache_path))
+        except Exception as e:
+            st.write("title_cache debug error:", str(e))
+
+        # -----------------------------
+        # Data sanity (post ranking)
+        # -----------------------------
+        st.markdown("### Data sanity（投稿ランキングの空原因チェック）")
+
+        def _post_title_stats(dfp, label):
+            if dfp is None or not isinstance(dfp, pd.DataFrame) or dfp.empty:
+                st.write(f"{label}: df is empty/None")
+                return
+            if "item_type" not in dfp.columns:
+                st.write(f"{label}: no item_type column")
+                return
+            dpost = dfp[dfp["item_type"] == "post"].copy()
+            st.write(f"{label}: post rows =", int(len(dpost)))
+            if "title_short" not in dpost.columns:
+                st.write(f"{label}: no title_short column")
+                return
+            s = dpost["title_short"].fillna("").astype(str)
+            non_empty = int((s.str.len() > 0).sum())
+            non_url = int((~s.str.startswith("http")).sum())
+            valid = int(((s.str.len() > 0) & (~s.str.startswith("http"))).sum())
+            st.write(f"{label}: title_short non-empty =", non_empty)
+            st.write(f"{label}: title_short non-url =", non_url)
+            st.write(f"{label}: title_short valid (non-empty & non-url) =", valid)
+
+        _post_title_stats(df_my_all, "MyFans(all)")
+        _post_title_stats(df_ca_all, "CandFans(all)")
+        _post_title_stats(df_all, "ALL(all)")
+
+
+
+
+
+# --- Admin Debug (TEMP) ---
+admin_debug_panel(df_my_all=df_my_all, df_ca_all=df_ca_all, df_all=df_all)
+# --- /Admin Debug (TEMP) ---
+
 # =============================
 # 年 / 月（年間）フィルタ（サイドバーではなくメイン上部に表示）
 # ＋ 管理者のみ：MyFans タイトル一括取得（全期間）
@@ -1233,61 +1389,15 @@ def show_df(df: pd.DataFrame, max_rows=200):
 # =============================
 # Matplotlib: 固定（画像化して表示）
 # =============================
-# フォント設定は「Meiryo/Yu Gothic を優先」しつつ、
-# Cloud（Linux）では同梱フォント（fonts/ 配下）に自動フォールバックする。
-_MPL_FONT_READY = False
-_MPL_FONT_NAME = None
 
+# =============================
+# Admin Debug Panel (TEMP)
+# - 管理者(is_admin)だけに常時表示
+# - 既存ロジックから独立（ここ一塊を削除すれば完全に消える）
+# =============================
 def mpl_setup():
-    """
-    Matplotlib: 日本語フォントをローカル/Cloud の両方で安定表示する。
-
-    方針：
-    - Windows ローカルでは Meiryo / Yu Gothic を最優先（UIと雰囲気が揃いやすい）
-    - Cloud（Linux）では OS に日本語フォントが無いことが多いので、
-      リポジトリ同梱の fonts/ 配下フォントにフォールバックして□を防ぐ
-    """
-    global _MPL_FONT_READY, _MPL_FONT_NAME
-    if _MPL_FONT_READY:
-        return
-
-    # 1) 同梱フォント候補（置き換え運用しやすいよう app_font.* を優先）
-    candidates = [
-        Path("fonts/app_font.ttf"),
-        Path("fonts/app_font.otf"),
-        Path("fonts/NotoSansJP-VariableFont_wght.ttf"),
-        Path("fonts/NotoSansJP-Regular.ttf"),
-    ]
-
-    chosen_name = None
-    for fp in candidates:
-        try:
-            if fp.exists():
-                font_manager.fontManager.addfont(str(fp))
-                chosen_name = font_manager.FontProperties(fname=str(fp)).get_name()
-                break
-        except Exception:
-            continue
-
-    # 2) フォント優先順位を設定
-    #   - sans-serif を使い、sans-serif の候補リストで優先順位を制御する
-    #   - ローカル: Meiryo/Yu Gothic があればそれが採用される
-    #   - Cloud: それらが無いので同梱フォント（chosen_name）が採用される
-    # 同梱フォントが見つかった場合は、それを最優先（ローカル/Cloudで見た目を揃える）
-    if chosen_name:
-        sans_list = [chosen_name, "Noto Sans JP", "Meiryo", "Yu Gothic", "DejaVu Sans", "sans-serif"]
-        _MPL_FONT_NAME = chosen_name
-    else:
-        sans_list = ["Meiryo", "Yu Gothic", "Noto Sans JP", "DejaVu Sans", "sans-serif"]
-
-    matplotlib.rcParams["font.family"] = "sans-serif"
-    matplotlib.rcParams["font.sans-serif"] = sans_list
-
-    # マイナス記号が□になるのを防ぐ
+    matplotlib.rcParams["font.family"] = ["Meiryo", "Yu Gothic", "Noto Sans JP", "sans-serif"]
     matplotlib.rcParams["axes.unicode_minus"] = False
-
-    _MPL_FONT_READY = True
-
 
 def fig_to_image(fig):
     buf = BytesIO()
@@ -1313,7 +1423,6 @@ def chart_daily_line_img(df, title, color_hex, height_px=380, overlays=None, x_m
       - (platform, color, linestyle, "plan" or "post")
     x_mode: "daily" or "monthly"
     """
-    mpl_setup()
     if df is None or len(df) == 0:
         return None
 
