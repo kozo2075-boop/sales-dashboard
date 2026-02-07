@@ -19,7 +19,6 @@ import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.ticker import FuncFormatter
-from matplotlib import font_manager
 
 # =============================
 # Streamlit config
@@ -168,17 +167,6 @@ COLORS = {
     # 折れ線（ALL）
     "ALL_LINE": "#4EF282",  # ネオングリーン
 
-    # 円グラフ（ALL / プラン別固定色）
-    # ルール：プラン名ごとに固定色（売上降順で並べても色が崩れない）
-    "ALL_PLAN_COLORS": {
-        "顔出し最強プラン": "#3B82F6",      # blue
-        "こた倶楽部": "#F59E0B",            # amber
-        "バックナンバー": "#10B981",        # green
-        "バックナンバー(単月)": "#6EE7B7",   # light green (派生)
-        "その他": "#94A3B8",                # gray fallback
-    },
-
-
     # =========================
     # MyFans
     # =========================
@@ -223,6 +211,27 @@ COLORS = {
         "顔出し最強プラン": "#9900FF",
         "こた倶楽部": "#C059FB",
         "バックナンバー": "#EAB7F7",
+    },
+
+
+    # =========================
+    # ALL（MyFans + CandFans 合算）
+    # =========================
+    # 円グラフ（ALL）: 緑系グラデーション（濃→薄）
+    "ALL_PIE": [
+        "#0E7A3A",  # 濃い緑（顔出し最強プラン）
+        "#2ECC71",  # 中間の緑（こた倶楽部）
+        "#8AF0B0",  # 薄い緑（バックナンバー）
+        "#D7FFE7",  # かなり薄い緑（バックナンバー(単月)）
+    ],
+
+    # プラン名 → 固定色（ALL 円グラフ用）
+    # ルール: MyFansと同じ “濃さの階層” に合わせる
+    "ALL_PLAN_COLORS": {
+        "顔出し最強プラン": "#0E7A3A",
+        "こた倶楽部": "#2ECC71",
+        "バックナンバー": "#8AF0B0",
+        "バックナンバー(単月)": "#D7FFE7",
     },
 
     # 棒グラフ
@@ -527,17 +536,21 @@ def gather_myfans_urls_per_month(topn_per_month: int = 10) -> list[str]:
             continue
 
         d = df.copy()
-        d["種類"] = d["種類"].astype(str)
-        d = d[d["種類"].str.contains("単品", na=False)]  # post相当
-        if len(d) == 0:
-            continue
-
-        d["amount"] = pd.to_numeric(d["金額"], errors="coerce").fillna(0)
-        d["url"] = d["対象URL"].astype(str).fillna("").str.strip()
-
-        d = d[(d["url"].str.startswith("http://")) | (d["url"].str.startswith("https://"))]
-        if len(d) == 0:
-            continue
+        # platform列を安定させる（MyFans/CandFans -> myfans/candfans）
+        if "platform" in d.columns:
+            d["platform"] = d["platform"].astype(str).str.strip().str.lower()
+    
+            d["種類"] = d["種類"].astype(str)
+            d = d[d["種類"].str.contains("単品", na=False)]  # post相当
+            if len(d) == 0:
+                continue
+    
+            d["amount"] = pd.to_numeric(d["金額"], errors="coerce").fillna(0)
+            d["url"] = d["対象URL"].astype(str).fillna("").str.strip()
+    
+            d = d[(d["url"].str.startswith("http://")) | (d["url"].str.startswith("https://"))]
+            if len(d) == 0:
+                continue
 
         d = d.sort_values("amount", ascending=False).head(topn_per_month)
         urls.extend(d["url"].tolist())
@@ -616,33 +629,21 @@ def load_myfans_all(title_len: int) -> pd.DataFrame:
         if any(c not in df_raw.columns for c in required):
             continue
 
-        def classify_item_type(kind: str, url: str = "", target: str = "") -> str:
+        def classify_item_type(kind: str, url: str = "") -> str:
             kind_s = "" if pd.isna(kind) else str(kind)
             url_s = "" if pd.isna(url) else str(url)
-            tgt_s = "" if pd.isna(target) else str(target)
             u = url_s.lower()
-
-            # --- MyFans 固有：バックナンバー(単月)はプラン扱いにする ---
-            # CSV上でURLが空・種類が曖昧でも「対象」に単月バックナンバーが入ることがあるため
-            t = tgt_s.replace(" ", "").replace("　", "")
-            k = kind_s.replace(" ", "").replace("　", "")
-            if ("バックナンバー" in t and "単月" in t) or ("バックナンバー" in k and ("単月" in k or "1ヶ月" in k or "１ヶ月" in k)):
-                return "plan"
-
             # URL優先: /account/plans/ や /plans/ はプラン購入扱い
             if "/account/plans/" in u or "/plans/" in u:
                 return "plan"
-
             # 投稿URLは post 扱い
             if "/posts/" in u or "/post/" in u:
                 return "post"
-
             # 種類テキストで判定
             if "プラン" in kind_s or "定期" in kind_s or "サブスク" in kind_s or "月額" in kind_s:
                 return "plan"
             if "単品" in kind_s or "投稿" in kind_s:
                 return "post"
-
             # 不明な場合は post として扱う（表示が欠けないように）
             return "post"
 
@@ -651,11 +652,10 @@ def load_myfans_all(title_len: int) -> pd.DataFrame:
             amount = pd.to_numeric(r["金額"], errors="coerce")
             fee = pd.to_numeric(r["手数料"], errors="coerce")
             url = str(r["対象URL"]) if not pd.isna(r["対象URL"]) else ""
-            target = str(r["対象"]) if not pd.isna(r["対象"]) else ""
-            item_type = classify_item_type(r["種類"], url, target)
+            item_type = classify_item_type(r["種類"], url)
 
             if item_type == "plan":
-                raw_title = target
+                raw_title = str(r["対象"]) if not pd.isna(r["対象"]) else ""
                 title_short = summarize_title(raw_title, int(title_len))
             else:
                 cached = get_cached_title(url) if url else None
@@ -1247,38 +1247,11 @@ def show_df(df: pd.DataFrame, max_rows=200):
 # =============================
 # Matplotlib: 固定（画像化して表示）
 # =============================
+# Font sizes (fallback)
+TITLE_FS = 14
+
 def mpl_setup():
-    """Matplotlib 日本語フォント設定（Cloud/ローカル共通）
-
-    - リポジトリ同梱フォント（fonts/ 配下）を最優先で登録・使用
-    - 無い場合はローカル環境の日本語フォントへフォールバック
-    """
-    # 1) 同梱フォント候補（上から優先）
-    font_candidates = [
-        Path("fonts/app_font.ttf"),
-        Path("fonts/app_font.otf"),
-        Path("fonts/NotoSansJP-Regular.ttf"),
-        Path("fonts/NotoSansCJKjp-Regular.otf"),
-        Path("fonts/NotoSansJP-VariableFont_wght.ttf"),  # 変数フォントは環境により失敗することあり
-    ]
-
-    font_name = None
-    for fp in font_candidates:
-        try:
-            if fp.exists():
-                font_manager.fontManager.addfont(str(fp))
-                font_name = font_manager.FontProperties(fname=str(fp)).get_name()
-                break
-        except Exception:
-            font_name = None
-
-    # 2) rcParams へ反映
-    if font_name:
-        matplotlib.rcParams["font.family"] = "sans-serif"
-        matplotlib.rcParams["font.sans-serif"] = [font_name, "DejaVu Sans", "sans-serif"]
-    else:
-        matplotlib.rcParams["font.family"] = ["Meiryo", "Yu Gothic", "Noto Sans JP", "DejaVu Sans", "sans-serif"]
-
+    matplotlib.rcParams["font.family"] = ["Meiryo", "Yu Gothic", "Noto Sans JP", "sans-serif"]
     matplotlib.rcParams["axes.unicode_minus"] = False
 
 def fig_to_image(fig):
@@ -1305,9 +1278,6 @@ def chart_daily_line_img(df, title, color_hex, height_px=380, overlays=None, x_m
       - (platform, color, linestyle, "plan" or "post")
     x_mode: "daily" or "monthly"
     """
-    # Ensure consistent font settings for this figure
-    mpl_setup()
-
     if df is None or len(df) == 0:
         return None
 
@@ -1508,6 +1478,14 @@ def _hex_to_rgb01(h: str):
     b = int(h[4:6], 16) / 255.0
     return (r, g, b)
 
+def hex_to_rgba(hex_color: str, alpha: float = 1.0):
+    """
+    '#RRGGBB' -> (r,g,b,a) in 0..1 floats. alpha default 1.0
+    Matplotlib の色指定などで使う。
+    """
+    r, g, b = _hex_to_rgb01(hex_color)
+    return (r, g, b, float(alpha))
+
 def _rgb01_to_hex(rgb):
     r = int(max(0, min(1, rgb[0])) * 255)
     g = int(max(0, min(1, rgb[1])) * 255)
@@ -1617,6 +1595,12 @@ def plan_pie_img(df: pd.DataFrame, title: str, height_px: int):
 
     is_all = title.startswith("ALL")
 
+    # 注釈制御（ALLではスライスと表示を分ける）
+    ann_names = None
+    ann_amounts = None
+    ann_pcts = None
+    ann_show = None
+
     def _canon_plan_name(s: str) -> str:
         s = str(s)
         s = s.replace(" ", "").replace("　", "")
@@ -1641,22 +1625,83 @@ def plan_pie_img(df: pd.DataFrame, title: str, height_px: int):
 
 
     if is_all:
-        # 統合して4カテゴリ（＋その他があれば最後に）
+        # ALL：同一プラン内で「MyFans→CandFans」の2スライスに分割しつつ、
+        # 表示（注釈）はプラン合算（金額・%）を 1回だけ出す。
+        # 並び順：プラン合算の売上降順で時計回り、同プラン内は MyFans→CandFans
+
         d["canon"] = d["title_short"].apply(_canon_plan_name)
+
+        if "platform" not in d.columns:
+            # 念のため（ALLでは platform がある想定）
+            d["platform"] = "myfans"
+
         g = (
-            d.groupby("canon", as_index=False)["amount"]
+            d.groupby(["canon", "platform"], as_index=False)["amount"]
+            .sum()
+        )
+
+        totals = (
+            g.groupby("canon", as_index=False)["amount"]
             .sum()
             .sort_values("amount", ascending=False)
         )
 
-        labels = g["canon"].astype(str).tolist()
-        values = g["amount"].astype(float).tolist()
+        plan_order = totals["canon"].astype(str).tolist()
 
-        # ALLの円グラフ色：プラン名ごとの固定色（売上降順で並べても色が崩れない）
-        all_map = COLORS.get("ALL_PLAN_COLORS", {})
-        colors = [all_map.get(str(lbl), all_map.get("その他", "#94A3B8")) for lbl in labels]
+        my_map = COLORS.get("MY_PLAN_COLORS", {})
+        ca_map = COLORS.get("CA_PLAN_COLORS", {})
 
+        my_fallback_cols = _multi_stop_grad_colors(COLORS["MY_PIE"], len(plan_order))
+        ca_fallback_cols = _multi_stop_grad_colors(COLORS["CA_PIE"], len(plan_order))
 
+        values = []
+        colors = []
+
+        # 注釈用（スライスの値ではなく、プラン合算を出す）
+        ann_names = []
+        ann_amounts = []
+        ann_pcts = []
+        ann_show = []
+
+        total_all = float(totals["amount"].sum()) if len(totals) > 0 else 0.0
+
+        for idx, plan in enumerate(plan_order):
+            plan_total = float(totals.loc[totals["canon"] == plan, "amount"].iloc[0])
+            pct_plan = (plan_total / total_all) * 100.0 if total_all > 0 else 0.0
+
+            my_val = float(g.loc[(g["canon"] == plan) & (g["platform"] == "myfans"), "amount"].sum())
+            ca_val = float(g.loc[(g["canon"] == plan) & (g["platform"] == "candfans"), "amount"].sum())
+
+            first_added = False
+
+            # MyFans → CandFans の順
+            if my_val > 0:
+                values.append(my_val)
+                colors.append(my_map.get(plan, my_fallback_cols[idx]))
+
+                ann_names.append(plan)
+                ann_amounts.append(plan_total)
+                ann_pcts.append(pct_plan)
+                ann_show.append(True)
+                first_added = True
+
+            if ca_val > 0:
+                values.append(ca_val)
+                colors.append(ca_map.get(plan, ca_fallback_cols[idx]))
+
+                ann_names.append(plan)
+                if not first_added:
+                    # MyFansが無いプラン（念のため）：このCandFansスライスで合算注釈を出す
+                    ann_amounts.append(plan_total)
+                    ann_pcts.append(pct_plan)
+                    ann_show.append(True)
+                else:
+                    # 2スライス目は注釈は出さない（色だけでMy/Candを表現）
+                    ann_amounts.append(ca_val)
+                    ann_pcts.append((ca_val / total_all) * 100.0 if total_all > 0 else 0.0)
+                    ann_show.append(False)
+
+        labels = ann_names
     else:
         # MyFans / CandFans：プラン名を正式名称へ正規化して集計（色固定のため）
         d["canon"] = d["title_short"].apply(_canon_plan_name)
@@ -1687,12 +1732,9 @@ def plan_pie_img(df: pd.DataFrame, title: str, height_px: int):
         st.info("plan金額がありません")
         return
 
-    # サイズ：以前の見た目（注釈2.5倍・直径1.5倍）に戻す
-    base_fig_w = 11
-    base_fig_h = max(3.2, height_px / 90.0)
-    pie_scale = 1.5
-    fig_w = base_fig_w * pie_scale
-    fig_h = base_fig_h * pie_scale
+    # サイズ：棒グラフと同程度にしたい → height_px を反映
+    fig_w = 11
+    fig_h = max(3.2, height_px / 90.0)
     fig = plt.figure(figsize=(fig_w, fig_h), facecolor=(0, 0, 0, 0), dpi=220)
     ax = fig.add_subplot(111)
     ax.set_facecolor((1, 1, 1, 0.03))
@@ -1702,13 +1744,10 @@ def plan_pie_img(df: pd.DataFrame, title: str, height_px: int):
         colors=colors,
         startangle=90,
         counterclock=False,  # ★ 時計回り
-        radius=1.15,
         wedgeprops={"edgecolor": COLORS.get("PIE_EDGE", "#696969"), "linewidth": 1.0},
     )
 
-    annot_fs = 9.6 * 2.5
-    title_fs = annot_fs * 2.0
-    ax.set_title(title, color="#EAF0FF", fontsize=title_fs, pad=14, fontweight="bold")
+    ax.set_title(title, color="#EAF0FF", fontsize=14, pad=12, fontweight="bold")
 
     # 吹き出し（プラン名の下に金額・割合）
     used_tys = {"L": [], "R": []}
@@ -1717,8 +1756,22 @@ def plan_pie_img(df: pd.DataFrame, title: str, height_px: int):
         x = np.cos(np.deg2rad(ang))
         y = np.sin(np.deg2rad(ang))
 
+        # ALLの場合は「プラン合算」を1回だけ表示（2スライス目は注釈無し）
+        if ann_show is not None and i < len(ann_show) and not ann_show[i]:
+            continue
+
         pct = (float(values[i]) / total) * 100.0
-        txt = f"{labels[i]}\n{fmt_yen(values[i])}  ({fmt_pct(pct)})"
+        name = labels[i]
+        amt = float(values[i])
+
+        if ann_names is not None and i < len(ann_names):
+            name = ann_names[i]
+        if ann_amounts is not None and i < len(ann_amounts):
+            amt = float(ann_amounts[i])
+        if ann_pcts is not None and i < len(ann_pcts):
+            pct = float(ann_pcts[i])
+
+        txt = f"{name}\\n{fmt_yen(amt)}  ({fmt_pct(pct)})"
 
         side = "R" if x >= 0 else "L"
 
@@ -1747,7 +1800,7 @@ def plan_pie_img(df: pd.DataFrame, title: str, height_px: int):
             textcoords="data",
             ha="left" if x >= 0 else "right",
             va="center",
-            fontsize=annot_fs,
+            fontsize=9.6,
             color="#EAF0FF",
             bbox=dict(boxstyle="round,pad=0.35", fc=(0, 0, 0, 0.35), ec=(1, 1, 1, 0.18), lw=0.8),
             arrowprops=dict(
@@ -1773,6 +1826,7 @@ def top_bars_img(
     color_spec=None,   # "#RRGGBB" or {"myfans":"#..", "candfans":"#.."}
     color_hex: str = None,  # 互換用（古い呼び出し対策）
     height_px: int = 320,
+    render_image: bool = True,
 ) -> pd.DataFrame:
     """
     画像として棒グラフを描画（hover/ズーム/パンが一切出ない）
@@ -1780,127 +1834,31 @@ def top_bars_img(
     """
     d = df[df["item_type"] == item_type].copy()
 
-    # 投稿TOP（棒）: タイトル未取得でもURLをキーにランキング表示（URL自体は表示しない）
-    if item_type == "post":
-        d["title_short"] = d.get("title_short", "").astype(str)
+    # URLのまま / title_short空 はランキングに出さない
+    d = d[d["title_short"].astype(str).str.len() > 0]
+    d = d[~d["title_short"].astype(str).str.startswith("http")]
 
-        # URL列が無い場合は空扱い（CSV差異に耐える）
-        if "url" in d.columns:
-            d["url"] = d["url"].astype(str)
-        else:
-            d["url"] = ""
+    if len(d) == 0:
+        st.info("データがありません")
+        return pd.DataFrame()
 
-        # 良いタイトル（非空 & URLではない）なら title_short を採用。
-        # それ以外は URL をキーにしてランキング対象にする。
-        good_title = (d["title_short"].str.len() > 0) & (~d["title_short"].str.startswith("http"))
-        url_ok = d["url"].str.startswith("http")
-        d["_key"] = np.where(good_title, d["title_short"], np.where(url_ok, d["url"], d["title_short"]))
+    g_cols = ["title_short"]
+    if "platform" in d.columns:
+        g_cols = ["platform", "title_short"]
 
-        # キーが完全に空のものは除外
-        d = d[d["_key"].astype(str).str.len() > 0]
+    g = (
+        d.groupby(g_cols, as_index=False)["amount"]
+        .sum()
+        .sort_values("amount", ascending=False)
+        .head(int(topn))
+    )
 
-        if len(d) == 0:
-            st.info("データがありません")
-            return pd.DataFrame()
+    # 表示用に反転（上が1位）
+    g = g.iloc[::-1].reset_index(drop=True)
 
-        g_cols = ["_key"]
-        if "platform" in d.columns:
-            g_cols = ["platform", "_key"]
+    if not render_image:
+        return g
 
-        g = (
-            d.groupby(g_cols, as_index=False)["amount"]
-            .sum()
-            .sort_values("amount", ascending=False)
-            .head(int(topn))
-        )
-
-        # --- タイトル解決（上位のURLだけ軽く取得してキャッシュに保存） ---
-        keys = g["_key"].astype(str).tolist()
-        url_keys = [k for k in keys if k.startswith("http")]
-
-        resolved_title = {}
-
-        # 1) キャッシュ
-        for u in url_keys:
-            try:
-                cached_title = get_cached_title(u)
-            except Exception:
-                cached_title = None
-            if cached_title:
-                try:
-                    resolved_title[u] = summarize_title(str(cached_title), 40)
-                except Exception:
-                    resolved_title[u] = str(cached_title)[:40]
-
-        # 2) 足りない分だけWeb取得（最大5件/描画）
-        max_fetch_per_render = 5
-        fetched = 0
-        for u in url_keys:
-            if fetched >= max_fetch_per_render:
-                break
-            if u in resolved_title:
-                continue
-
-            try:
-                t = fetch_title_from_web(u, timeout=8, max_retries=1)
-                if t:
-                    try:
-                        set_cached_title(u, t)
-                    except Exception:
-                        pass
-                    try:
-                        resolved_title[u] = summarize_title(str(t), 40)
-                    except Exception:
-                        resolved_title[u] = str(t)[:40]
-            except Exception:
-                pass
-
-            fetched += 1
-            # 連続アクセスを避ける（軽く）
-            time.sleep(0.4)
-
-        # 表示ラベルを作る（URLは表示せず、タイトル未取得として番号付け）
-        placeholder_i = 1
-        disp_labels = []
-        for k in keys:
-            if not str(k).startswith("http"):
-                disp_labels.append(str(k))
-                continue
-
-            v = resolved_title.get(k)
-            if v:
-                disp_labels.append(v)
-            else:
-                disp_labels.append(f"（タイトル未取得） #{placeholder_i}")
-                placeholder_i += 1
-
-        g["title_short"] = disp_labels
-
-        # 表示用に反転（上が1位）
-        g = g.iloc[::-1].reset_index(drop=True)
-
-    else:
-        # プラン等は従来どおり（URLのまま/空は除外）
-        d = d[d["title_short"].astype(str).str.len() > 0]
-        d = d[~d["title_short"].astype(str).str.startswith("http")]
-
-        if len(d) == 0:
-            st.info("データがありません")
-            return pd.DataFrame()
-
-        g_cols = ["title_short"]
-        if "platform" in d.columns:
-            g_cols = ["platform", "title_short"]
-
-        g = (
-            d.groupby(g_cols, as_index=False)["amount"]
-            .sum()
-            .sort_values("amount", ascending=False)
-            .head(int(topn))
-        )
-
-        # 表示用に反転（上が1位）
-        g = g.iloc[::-1].reset_index(drop=True)
 
     mpl_setup()
 
@@ -2075,6 +2033,82 @@ def admin_fetch_myfans_titles(df_my: pd.DataFrame):
     except Exception:
         pass
     st.info("反映のため、必要ならページを再読み込みしてください（Ctrl+F5）。")
+
+
+# =============================
+# ADMIN DEBUG PANEL（完全独立・削除しやすい）
+#  - 本体ロジックに干渉しない（表示のみ）
+#  - 例外は握りつぶしてアプリ本体を止めない
+# =============================
+def admin_debug_panel_safe():
+    """Admin-only debug panel.
+
+    Design goals:
+      - Does NOT modify existing business logic.
+      - Safe: any exception in debug panel must not stop the app.
+      - Visible: big neon border/banner so you can notice it immediately.
+
+    Enable conditions:
+      - If global `is_admin` is truthy, OR
+      - If environment variable ADMIN_DEBUG=1 (temporary override)
+    """
+    try:
+        import os
+        import streamlit as st
+        force = os.getenv("ADMIN_DEBUG", "").strip() == "1"
+        is_admin_val = bool(globals().get("is_admin", False))
+
+        if not (is_admin_val or force):
+            return
+
+        # Loud banner
+        st.markdown(
+            """
+            <div style="border:4px solid #39FF14; padding:12px 14px; border-radius:14px; background:rgba(57,255,20,0.10); margin:10px 0 14px 0;">
+              <div style="font-size:18px; font-weight:800; color:#39FF14;">🛠 ADMIN DEBUG PANEL (AUTO)</div>
+              <div style="font-size:12px; opacity:0.95; color:#eaffea; margin-top:4px;">
+                visible if <b>is_admin</b> or <b>ADMIN_DEBUG=1</b>. (is_admin=%s, override=%s)
+              </div>
+            </div>
+            """ % (str(is_admin_val), str(force)),
+            unsafe_allow_html=True,
+        )
+
+        with st.expander("🛠 Admin Debug (details)", expanded=True):
+            st.write("### Runtime / Path")
+            st.json({
+                "python": globals().get("__PYTHON_VERSION__", None),
+                "platform": globals().get("__PLATFORM__", None),
+                "cwd": globals().get("__CWD__", None),
+                "file_dir": globals().get("__FILE_DIR__", None),
+                "is_admin": is_admin_val,
+                "override_env_ADMIN_DEBUG": force,
+            })
+            st.write("### Debug notes")
+            st.info(
+                "This admin debug panel is isolated from business logic.\n"
+                "Set ADMIN_DEBUG=1 to force show (temporary) if your admin auth isn't set.",
+                icon="🛠",
+            )
+            st.code(
+                "If the panel is not visible:\n"
+                "  - set environment variable ADMIN_DEBUG=1 (temporary), or\n"
+                "  - ensure your existing admin auth sets global `is_admin=True`.\n",
+                language="text",
+            )
+            st.write("### Data sanity (light)")
+            st.write("### Data sanity (light)")
+            for k in ["df_my_all", "df_ca_all", "df_all", "df_view_all", "df_view_my", "df_view_ca"]:
+                df = globals().get(k, None)
+                try:
+                    if df is not None and hasattr(df, "shape"):
+                        st.write(f"- {k}: rows={df.shape[0]}, cols={df.shape[1]}")
+                except Exception:
+                    pass
+
+    except Exception:
+        # Debug panel must never break the app
+        return
 
 # =============================
 # “全文タイトル表示” UI（クリック/タップ）
@@ -2260,6 +2294,169 @@ def render_kpis_with_breakdown(df: pd.DataFrame, title_prefix: str):
     st.markdown("")  # 余白
 
 
+
+def weekday_sales_stacked_bar_img(df: pd.DataFrame, title: str, height_px: int = 420):
+    """
+    曜日別売上（縦の積み上げ棒：下=CandFans / 上=MyFans）
+    - df は選択中の年月でフィルタ済みを想定
+    - 棒の上に総売上（¥）
+    - 棒の各領域内に割合（%）
+    """
+    if df is None or len(df) == 0:
+        st.info("曜日別のデータがありません")
+        return
+
+    d = df.copy()
+    if "date" not in d.columns:
+        # ここでは「CSV取得ロジックは触らず」に、曜日計算に必要な日付だけを吸収する
+        # 1) ymd があれば最優先
+        if "ymd" in d.columns:
+            d["date"] = pd.to_datetime(d["ymd"], errors="coerce")
+        else:
+            # 2) 投稿データ側でよくある日時カラム候補
+            datetime_candidates = [
+                "occurred_at", "created_at", "posted_at", "timestamp", "datetime",
+                "date_time", "time", "at",
+            ]
+            dt_col = next((c for c in datetime_candidates if c in d.columns), None)
+            if dt_col is None:
+                st.info("曜日別に必要な日付列が見つかりません（date / ymd / occurred_at 等が必要）")
+                return
+            d["date"] = pd.to_datetime(d[dt_col], errors="coerce")
+
+    # 日付が全てNaTならここで止める
+    if d["date"].isna().all():
+        st.info("曜日別売上の計算で日付の解釈に失敗しました（date/occurred_atがNaT）")
+        return
+
+    # 時刻を落として日付（00:00:00）に正規化（曜日計算を安定させる）
+    d["date"] = d["date"].dt.normalize()
+
+    d = d.dropna(subset=["date"])
+    if len(d) == 0:
+        st.info("曜日別のデータがありません")
+        return
+
+    # platform は "myfans"/"candfans" を想定
+    if "platform" not in d.columns:
+        st.info("曜日別に必要なplatform列が見つかりません")
+        return
+
+    d["dow"] = d["date"].dt.weekday  # 0=Mon..6=Sun
+
+    # 集計
+    g = (
+        d.groupby(["dow", "platform"], as_index=False)["amount"]
+        .sum()
+        .pivot(index="dow", columns="platform", values="amount")
+        .fillna(0.0)
+    )
+
+    # 0..6 を必ず揃える
+    for i in range(7):
+        if i not in g.index:
+            g.loc[i, :] = 0.0
+    g = g.sort_index()
+
+    my = g["myfans"].astype(float) if "myfans" in g.columns else pd.Series([0.0] * 7, index=g.index)
+    ca = g["candfans"].astype(float) if "candfans" in g.columns else pd.Series([0.0] * 7, index=g.index)
+    total = (my + ca).astype(float)
+
+    # 表示
+    mpl_setup()
+
+    fig = plt.figure(figsize=(11, 4.2), facecolor=(0, 0, 0, 0))
+    ax = fig.add_subplot(111)
+    ax.set_facecolor((1, 1, 1, 0.03))
+
+    x = np.arange(7)
+    labels = ["月", "火", "水", "木", "金", "土", "日"]
+
+    ca_color = hex_to_rgba(COLORS["CA_LINE"], alpha=0.55)
+    my_color = hex_to_rgba(COLORS["MY_LINE"], alpha=0.55)
+
+    bars_ca = ax.bar(x, ca.values, color=ca_color, edgecolor=(1, 1, 1, 0.08), linewidth=0.8)
+    bars_my = ax.bar(x, my.values, bottom=ca.values, color=my_color, edgecolor=(1, 1, 1, 0.08), linewidth=0.8)
+
+    # --- local font sizes (avoid global NameError) ---
+
+    TITLE_FS = 14
+
+    TICK_FS = 11
+
+    LABEL_FS = 11
+
+
+    ax.set_title(title, fontsize=14, color="white", pad=14)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, fontsize=TICK_FS, color="#CFCFD6")
+    ax.tick_params(axis="y", colors="#CFCFD6", labelsize=TICK_FS, pad=2)
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda v, pos: fmt_yen(v)))
+    ax.grid(True, alpha=0.15, axis="y")
+
+    # 合計ラベル（棒の上）
+    ymax = float(max(total.values)) if len(total) else 0.0
+    for i in range(7):
+        t = float(total.iloc[i])
+        if t <= 0:
+            continue
+        ax.text(
+            x[i],
+            t + max(ymax * 0.02, 1.0),
+            fmt_yen(t),
+            ha="center",
+            va="bottom",
+            fontsize=LABEL_FS,
+            color="white",
+        )
+
+        # 割合（各領域内）
+        ca_v = float(ca.iloc[i])
+        my_v = float(my.iloc[i])
+        if t > 0:
+            ca_pct = (ca_v / t) * 100.0
+            my_pct = (my_v / t) * 100.0
+
+            # CandFans（下）
+            if ca_v > 0:
+                ax.text(
+                    x[i],
+                    ca_v * 0.5,
+                    f"{fmt_pct(ca_pct)}",
+                    ha="center",
+                    va="center",
+                    fontsize=LABEL_FS,
+                    color="black" if ca_v > ymax * 0.18 else "white",
+                )
+            # MyFans（上）
+            if my_v > 0:
+                ax.text(
+                    x[i],
+                    ca_v + my_v * 0.5,
+                    f"{fmt_pct(my_pct)}",
+                    ha="center",
+                    va="center",
+                    fontsize=LABEL_FS,
+                    color="black" if my_v > ymax * 0.18 else "white",
+                )
+
+    ax.spines["bottom"].set_color("#444455")
+    ax.spines["left"].set_color("#444455")
+    ax.spines["top"].set_color((0, 0, 0, 0))
+    ax.spines["right"].set_color((0, 0, 0, 0))
+
+    fig.tight_layout()
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=160, transparent=True, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    st.image(buf, use_container_width=True)
+    st.markdown("")
+
+
+# NOTE: 時間別(1h/2h)の集計・表示は、CandFans側に時刻データが無いケースがあるため一旦削除しました。
+#       週次(曜日別)の積み上げ棒グラフのみを採用しています。
 def section_overview(df: pd.DataFrame, line_color, title_prefix: str):
     if df is None or len(df) == 0:
         st.warning("データがありません。管理者モードでアップロードしてください。")
@@ -2345,15 +2542,40 @@ def section_overview(df: pd.DataFrame, line_color, title_prefix: str):
         st.image(buf, use_container_width=True)
     st.markdown("")
 
+
+    # -----------------------------
+    # 下段（円グラフ / 曜日別 / 投稿ランキング）
+    # -----------------------------
     bar_colors = (
         {"myfans": COLORS["MY_POST_BAR"], "candfans": COLORS["CA_POST_BAR"]}
         if title_prefix == "ALL"
         else (COLORS["MY_POST_BAR"] if title_prefix == "MyFans" else COLORS["CA_POST_BAR"])
     )
 
-    if mobile_mode:
-        plan_pie_img(df, f"{title_prefix}：プラン割合（売上）", height_px=bar_h)
-        st.markdown("")
+    if title_prefix == "ALL":
+        # 折れ線グラフ下：左=MyFans円 / 右=CandFans円（“そのまま”）
+        df_my_view = df[df.get("platform") == "myfans"].copy() if "platform" in df.columns else df.iloc[0:0].copy()
+        df_ca_view = df[df.get("platform") == "candfans"].copy() if "platform" in df.columns else df.iloc[0:0].copy()
+
+        if mobile_mode:
+            plan_pie_img(df_my_view, "MyFans：プラン割合（売上）", height_px=bar_h)
+            st.markdown("")
+            plan_pie_img(df_ca_view, "CandFans：プラン割合（売上）", height_px=bar_h)
+        else:
+            c1, c2 = st.columns(2, gap="large")
+            with c1:
+                plan_pie_img(df_my_view, "MyFans：プラン割合（売上）", height_px=bar_h)
+            with c2:
+                plan_pie_img(df_ca_view, "CandFans：プラン割合（売上）", height_px=bar_h)
+
+        # その下：曜日別売上（縦の積み上げ棒：下=CandFans / 上=MyFans）
+        weekday_sales_stacked_bar_img(
+            df,
+            f"{title_prefix}：曜日別売上（MyFans/CandFans）",
+            height_px=520 if not mobile_mode else 460,
+        )
+
+        # 投稿ランキング用の集計だけ行う（ALLは棒グラフ表示は削除）
         g_post = top_bars_img(
             df,
             "post",
@@ -2361,12 +2583,13 @@ def section_overview(df: pd.DataFrame, line_color, title_prefix: str):
             topn=10,
             color_spec=bar_colors,
             height_px=bar_h,
+            render_image=False,
         )
     else:
-        c1, c2 = st.columns(2, gap="large")
-        with c1:
+        # MyFans / CandFans：従来どおり（円＋棒）
+        if mobile_mode:
             plan_pie_img(df, f"{title_prefix}：プラン割合（売上）", height_px=bar_h)
-        with c2:
+            st.markdown("")
             g_post = top_bars_img(
                 df,
                 "post",
@@ -2375,7 +2598,19 @@ def section_overview(df: pd.DataFrame, line_color, title_prefix: str):
                 color_spec=bar_colors,
                 height_px=bar_h,
             )
-
+        else:
+            c1, c2 = st.columns(2, gap="large")
+            with c1:
+                plan_pie_img(df, f"{title_prefix}：プラン割合（売上）", height_px=bar_h)
+            with c2:
+                g_post = top_bars_img(
+                    df,
+                    "post",
+                    f"{title_prefix}：投稿 TOP（売上）※URLのままは非表示",
+                    topn=10,
+                    color_spec=bar_colors,
+                    height_px=bar_h,
+                )
     st.markdown("")
     render_post_ranking(g_post, title_prefix)
 
@@ -2424,3 +2659,13 @@ with tab_ca:
     df_view_ca = filter_by_year_month(df_ca_all, selected_year, selected_month)
 
     section_overview(df_view_ca, COLORS["CA_LINE"], "CandFans")
+
+# === ADMIN DEBUG PANEL (standalone / safe to delete) =========================
+# 管理者モード(is_admin=True)のときだけ、追加情報を必ず表示します。
+# 不要になったら、このブロックと admin_debug_panel.py を削除すればOKです。
+
+# ---- Admin Debug Panel (standalone) ----
+try:
+    admin_debug_panel_safe()
+except Exception:
+    pass
