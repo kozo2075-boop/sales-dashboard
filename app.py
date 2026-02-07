@@ -19,6 +19,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.ticker import FuncFormatter
+from matplotlib import font_manager
 
 # =============================
 # Streamlit config
@@ -1232,9 +1233,61 @@ def show_df(df: pd.DataFrame, max_rows=200):
 # =============================
 # Matplotlib: 固定（画像化して表示）
 # =============================
+# フォント設定は「Meiryo/Yu Gothic を優先」しつつ、
+# Cloud（Linux）では同梱フォント（fonts/ 配下）に自動フォールバックする。
+_MPL_FONT_READY = False
+_MPL_FONT_NAME = None
+
 def mpl_setup():
-    matplotlib.rcParams["font.family"] = ["Meiryo", "Yu Gothic", "Noto Sans JP", "sans-serif"]
+    """
+    Matplotlib: 日本語フォントをローカル/Cloud の両方で安定表示する。
+
+    方針：
+    - Windows ローカルでは Meiryo / Yu Gothic を最優先（UIと雰囲気が揃いやすい）
+    - Cloud（Linux）では OS に日本語フォントが無いことが多いので、
+      リポジトリ同梱の fonts/ 配下フォントにフォールバックして□を防ぐ
+    """
+    global _MPL_FONT_READY, _MPL_FONT_NAME
+    if _MPL_FONT_READY:
+        return
+
+    # 1) 同梱フォント候補（置き換え運用しやすいよう app_font.* を優先）
+    candidates = [
+        Path("fonts/app_font.ttf"),
+        Path("fonts/app_font.otf"),
+        Path("fonts/NotoSansJP-VariableFont_wght.ttf"),
+        Path("fonts/NotoSansJP-Regular.ttf"),
+    ]
+
+    chosen_name = None
+    for fp in candidates:
+        try:
+            if fp.exists():
+                font_manager.fontManager.addfont(str(fp))
+                chosen_name = font_manager.FontProperties(fname=str(fp)).get_name()
+                break
+        except Exception:
+            continue
+
+    # 2) フォント優先順位を設定
+    #   - sans-serif を使い、sans-serif の候補リストで優先順位を制御する
+    #   - ローカル: Meiryo/Yu Gothic があればそれが採用される
+    #   - Cloud: それらが無いので同梱フォント（chosen_name）が採用される
+    # 同梱フォントが見つかった場合は、それを最優先（ローカル/Cloudで見た目を揃える）
+    if chosen_name:
+        sans_list = [chosen_name, "Noto Sans JP", "Meiryo", "Yu Gothic", "DejaVu Sans", "sans-serif"]
+        _MPL_FONT_NAME = chosen_name
+    else:
+        sans_list = ["Meiryo", "Yu Gothic", "Noto Sans JP", "DejaVu Sans", "sans-serif"]
+
+    matplotlib.rcParams["font.family"] = "sans-serif"
+    matplotlib.rcParams["font.sans-serif"] = sans_list
+
+    # マイナス記号が□になるのを防ぐ
     matplotlib.rcParams["axes.unicode_minus"] = False
+
+    _MPL_FONT_READY = True
+
 
 def fig_to_image(fig):
     buf = BytesIO()
@@ -1260,6 +1313,7 @@ def chart_daily_line_img(df, title, color_hex, height_px=380, overlays=None, x_m
       - (platform, color, linestyle, "plan" or "post")
     x_mode: "daily" or "monthly"
     """
+    mpl_setup()
     if df is None or len(df) == 0:
         return None
 
